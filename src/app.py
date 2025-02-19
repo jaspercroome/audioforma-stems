@@ -7,6 +7,7 @@ from pathlib import Path
 import logging
 import os
 from fastapi.exceptions import HTTPException
+from typing import List
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -14,11 +15,19 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Audio Separator")
 
-# Define allowed origins
-ALLOWED_ORIGINS = [
+# Get environment variables with defaults
+ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
+DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # Vite dev server
     "http://localhost:3000",  # Optional: Production URL
 ]
+
+# In production, add additional origins from environment variable
+ALLOWED_ORIGINS: List[str] = (
+    os.getenv('ALLOWED_ORIGINS', '').split(',') 
+    if ENVIRONMENT == 'production' and os.getenv('ALLOWED_ORIGINS') 
+    else DEFAULT_ALLOWED_ORIGINS
+)
 
 # CORS middleware for API routes
 app.add_middleware(
@@ -65,4 +74,5 @@ async def serve_file(path: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv('PORT', 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

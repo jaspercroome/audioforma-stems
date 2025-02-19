@@ -9,6 +9,9 @@ services:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379
+      - PORT=8000
+      - ENVIRONMENT=production
+      - ALLOWED_ORIGINS=https://your-frontend-domain.com
     depends_on:
       - redis
 
@@ -16,13 +19,19 @@ services:
     image: redis:alpine
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
 
   celery_worker:
     build: .
-    command: celery -A src.worker worker --loglevel=info
+    command: conda run -n audioforma-stems celery -A src.tasks worker --loglevel=info
     volumes:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=production
     depends_on:
       - redis
+
+volumes:
+  redis_data:
