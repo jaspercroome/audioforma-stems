@@ -6,12 +6,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - PORT=8000
-      - ENVIRONMENT=production
-      - ALLOWED_ORIGINS=https://your-frontend-domain.com
+      - ./temp:/app/temp
+      - ./jobs:/app/jobs
+    env_file:
+      - .env
     depends_on:
       - redis
 
@@ -24,12 +22,12 @@ services:
 
   celery_worker:
     build: .
-    command: conda run -n audioforma-stems celery -A src.tasks worker --loglevel=info
+    command: celery -A src.tasks worker --loglevel=info
     volumes:
-      - .:/app
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - ENVIRONMENT=production
+      - ./temp:/app/temp
+      - ./jobs:/app/jobs
+    env_file:
+      - .env
     depends_on:
       - redis
 
