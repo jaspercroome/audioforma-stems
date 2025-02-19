@@ -9,12 +9,34 @@ RUN apt-get update && \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only requirements first to leverage Docker cache
-COPY environment.yml .
-RUN conda env create -f environment.yml
+# Create conda environment with just Python first
+RUN conda create -n audioforma-stems python=3.9.18 -y
 
-# Make RUN commands use the new environment
+# Install conda packages in smaller groups
+RUN conda install -n audioforma-stems -y \
+    pip=23.3.1 \
+    fastapi=0.109.0 \
+    uvicorn=0.27.0 \
+    python-multipart=0.0.7 \
+    && conda clean -afy
+
+RUN conda install -n audioforma-stems -y \
+    pydub=0.25.1 \
+    python-dotenv=1.0.0 \
+    celery=5.3.6 \
+    redis-py=5.0.1 \
+    && conda clean -afy
+
+RUN conda install -n audioforma-stems -y \
+    ffmpeg=6.1.1 \
+    requests=2.31.0 \
+    aiohttp=3.9.1 \
+    aiofiles=23.2.1 \
+    && conda clean -afy
+
+# Install pip packages
 SHELL ["conda", "run", "-n", "audioforma-stems", "/bin/bash", "-c"]
+RUN pip install demucs==4.0.1
 
 # Copy application code
 COPY . .
