@@ -1,45 +1,46 @@
+FROM --platform=linux/amd64 python:3.9.18-slim as pytorch-base
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch and Demucs first
+RUN pip install torch==2.1.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+RUN pip install demucs==4.0.1
+
+# Pre-download Demucs models to avoid hanging during runtime
+RUN python -c "from demucs.pretrained import get_model; get_model('mdx_extra')"
+
+# Final stage
 FROM --platform=linux/amd64 python:3.9.18-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential \
     ffmpeg \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch first (CPU version to keep image smaller)
-RUN pip install torch==2.1.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+# Copy PyTorch and Demucs from base stage
+COPY --from=pytorch-base /usr/local/lib/python3.9/site-packages/torch /usr/local/lib/python3.9/site-packages/torch
+COPY --from=pytorch-base /usr/local/lib/python3.9/site-packages/torchaudio /usr/local/lib/python3.9/site-packages/torchaudio
+COPY --from=pytorch-base /usr/local/lib/python3.9/site-packages/demucs /usr/local/lib/python3.9/site-packages/demucs
+COPY --from=pytorch-base /root/.cache/torch/hub /root/.cache/torch/hub
 
-# Install Demucs
-RUN pip install demucs==4.0.1
-
-# Install web application dependencies
-RUN pip install \
-    fastapi==0.104.1 \
-    uvicorn==0.24.0 \
-    python-multipart==0.0.6 \
-    pydub==0.25.1 \
-    python-dotenv==1.0.0
-
-# Install async and file handling dependencies
-RUN pip install \
-    aiohttp==3.8.5 \
-    aiofiles==22.1.0 \
-    requests==2.31.0
-
-# Install task queue dependencies
-RUN pip install \
-    celery==5.3.4 \
-    redis==5.0.0
+# Copy and install requirements separately to avoid dependency resolver issues
+COPY requirements.txt requirements-supabase.txt ./
+RUN pip install -r requirements.txt && \
+    pip install -r requirements-supabase.txt
 
 # Copy application code
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p temp jobs
+RUN mkdir -p temp temp_uploads
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

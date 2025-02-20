@@ -7,29 +7,13 @@ services:
       - "8000:8000"
     volumes:
       - ./temp:/app/temp
-      - ./jobs:/app/jobs
+      - ./temp_uploads:/app/temp_uploads
     env_file:
       - .env
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-
-  celery_worker:
-    build: .
-    command: celery -A src.tasks worker --loglevel=info
-    volumes:
-      - ./temp:/app/temp
-      - ./jobs:/app/jobs
-    env_file:
-      - .env
-    depends_on:
-      - redis
+    environment:
+      - ENVIRONMENT=local
+      - ALLOWED_ORIGINS=http://localhost:5173
+    restart: unless-stopped
 
 volumes:
   redis_data:

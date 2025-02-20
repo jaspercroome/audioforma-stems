@@ -1,0 +1,5 @@
+supabase==2.3.4
+postgrest==0.14.0
+gotrue==2.1.0
+supafunc==0.3.3
+realtime==1.0.0 
