@@ -1,0 +1,11 @@
+fastapi==0.109.2
+uvicorn==0.27.1
+python-multipart==0.0.9
+aiohttp==3.9.3
+aiofiles==23.2.1
+pydantic==2.6.1
+python-dotenv==1.0.1
+supabase==2.3.4
+demucs==4.0.1
+pydub==0.25.1
+python-jose==3.3.0 

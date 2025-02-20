@@ -1,47 +1,42 @@
-from fastapi import APIRouter, UploadFile, BackgroundTasks, HTTPException
+from fastapi import APIRouter, UploadFile, BackgroundTasks, HTTPException, Form
 from ..processors.audio import AudioProcessor
+from ..models.schemas import ProcessingResponse, AudioSeparationRequest
+from ..config.supabase import supabase
 from pathlib import Path
-import json
 from datetime import datetime
 import shutil
-import tempfile
 import aiohttp
 import aiofiles
-from urllib.parse import urlparse
-from pydantic import BaseModel
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 JOBS_DIR = Path("jobs")
 JOBS_DIR.mkdir(exist_ok=True)
 
-async def process_audio(file_path: Path, job_id: str):
+async def process_audio(file_path: Path, job_id: str, artist: str, track: str):
     processor = AudioProcessor()
     try:
         # Create an UploadFile from the saved file
         with open(file_path, 'rb') as f:
             temp_file = UploadFile(filename="input.mp3", file=f)
-            result = await processor.process_file(temp_file, job_id)
-        
-        # Update final status - include the files from the result
-        with open(JOBS_DIR / f"{job_id}.json", 'w') as f:
-            json.dump({
-                "status": "completed",
-                "progress": 100,
-                "files": result["files"],  # Include the files info
-                "completed_at": datetime.now().isoformat()
-            }, f)
+            await processor.process_file(temp_file, job_id, artist, track)
     except Exception as e:
-        with open(JOBS_DIR / f"{job_id}.json", 'w') as f:
-            json.dump({
-                "status": "error",
-                "error": str(e),
-                "completed_at": datetime.now().isoformat()
-            }, f)
+        logger.error(f"Error processing audio: {str(e)}")
+        await processor.update_progress(job_id, 1.0, "error", str(e))
+    finally:
+        # Clean up the temporary upload file
+        if file_path.exists():
+            file_path.unlink()
 
-@router.post("/audio/separate")
-async def separate_audio(file: UploadFile, background_tasks: BackgroundTasks):
+@router.post("/audio/separate", response_model=ProcessingResponse)
+async def separate_audio(
+    background_tasks: BackgroundTasks,
+    file: UploadFile,
+    artist: str = Form(...),
+    track: str = Form(...)
+):
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_file = JOBS_DIR / f"{job_id}.json"
     
     # Save the uploaded file
     temp_dir = Path("temp_uploads")
@@ -52,26 +47,20 @@ async def separate_audio(file: UploadFile, background_tasks: BackgroundTasks):
         shutil.copyfileobj(file.file, buffer)
     
     # Initialize job status
-    with open(job_file, 'w') as f:
-        json.dump({
-            "status": "processing",
-            "progress": 0,
-            "started_at": datetime.now().isoformat()
-        }, f)
+    processor = AudioProcessor()
+    await processor.update_progress(job_id, 0, "processing")
     
     # Start processing in background
-    background_tasks.add_task(process_audio, temp_file_path, job_id)
+    background_tasks.add_task(process_audio, temp_file_path, job_id, artist, track)
     
-    return {"job_id": job_id}
+    return {"job_id": job_id, "status": "processing"}
 
-# Add this class for the request body
-class UrlRequest(BaseModel):
-    url: str
-
-@router.post("/audio/separate-from-url")
-async def separate_audio_from_url(request: UrlRequest, background_tasks: BackgroundTasks):
+@router.post("/audio/separate-from-url", response_model=ProcessingResponse)
+async def separate_audio_from_url(
+    request: AudioSeparationRequest,
+    background_tasks: BackgroundTasks
+):
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_file = JOBS_DIR / f"{job_id}.json"
     
     # Create temp directory for download
     temp_dir = Path("temp_uploads")
@@ -92,23 +81,25 @@ async def separate_audio_from_url(request: UrlRequest, background_tasks: Backgro
         raise HTTPException(status_code=400, detail=f"Error downloading file: {str(e)}")
     
     # Initialize job status
-    with open(job_file, 'w') as f:
-        json.dump({
-            "status": "processing",
-            "progress": 0,
-            "started_at": datetime.now().isoformat()
-        }, f)
+    processor = AudioProcessor()
+    await processor.update_progress(job_id, 0, "processing")
     
     # Start processing in background
-    background_tasks.add_task(process_audio, temp_file_path, job_id)
+    background_tasks.add_task(process_audio, temp_file_path, job_id, request.artist, request.track)
     
-    return {"job_id": job_id}
+    return {"job_id": job_id, "status": "processing"}
 
-@router.get("/audio/status/{job_id}")
+@router.get("/audio/status/{job_id}", response_model=ProcessingResponse)
 async def get_status(job_id: str):
-    job_file = JOBS_DIR / f"{job_id}.json"
-    if not job_file.exists():
+    response = supabase.table("job_progress").select("*").eq("job_id", job_id).execute()
+    
+    if not response.data:
         raise HTTPException(status_code=404, detail="Job not found")
         
-    with open(job_file) as f:
-        return json.load(f) 
+    job_status = response.data[0]
+    return {
+        "job_id": job_status["job_id"],
+        "status": job_status["status"],
+        "files": job_status.get("files"),
+        "error": job_status.get("error")
+    } 

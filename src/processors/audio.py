@@ -10,6 +10,7 @@ import sys
 from io import StringIO
 import json
 import logging
+from ..config.supabase import supabase, get_public_url
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,10 +32,9 @@ class AudioProcessor:
     def __init__(self):
         self.temp_dir = Path("temp")
         self.temp_dir.mkdir(exist_ok=True)
-        self.jobs_dir = Path("jobs")
-        self.jobs_dir.mkdir(exist_ok=True)
+        self.bucket_name = "stems"
         
-    async def process_file(self, file: UploadFile, job_id: str) -> dict:
+    async def process_file(self, file: UploadFile, job_id: str, artist: str, track: str) -> dict:
         try:
             # Generate unique directory for this processing job
             job_dir = self.temp_dir / job_id
@@ -43,18 +43,18 @@ class AudioProcessor:
             # Save uploaded file
             await self.update_progress(job_id, 0, "uploading")
             input_path = job_dir / "input.mp3"
-            print(f"Saving file to {input_path}")
+            logger.info(f"Saving file to {input_path}")
             with input_path.open("wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
             
             # Validate file
-            await self.update_progress(job_id, 10, "validating")
+            await self.update_progress(job_id, 0.1, "validating")
             if not self._validate_audio(input_path):
-                print(f"File validation failed for {input_path}")
+                logger.error(f"File validation failed for {input_path}")
                 raise HTTPException(status_code=400, detail="Invalid audio file")
             
             # Process with Demucs
-            await self.update_progress(job_id, 20, "processing")
+            await self.update_progress(job_id, 0.2, "processing")
             
             # Track progress
             total_steps = 4  # mdx_extra uses 4 models
@@ -67,7 +67,7 @@ class AudioProcessor:
                     match = progress_pattern.search(text)
                     if match:
                         current_seconds = float(match.group(1))
-                        overall_progress = 20 + ((current_model * 100) + (current_seconds / 33.0 * 100)) / total_steps * 0.8
+                        overall_progress = 0.2 + ((current_model * 100) + (current_seconds / 33.0 * 100)) / total_steps * 0.6
                         await self.update_progress(job_id, round(overall_progress, 2), "processing")
                 elif "Separating track" in text:
                     current_model += 1
@@ -88,47 +88,48 @@ class AudioProcessor:
             finally:
                 sys.stdout = original_stdout
             
-            # Move files to the expected location
-            output_dir = job_dir / "mdx_extra"
+            # Upload files to Supabase
+            await self.update_progress(job_id, 0.9, "uploading")
+            
+            output_dir = job_dir / "mdx_extra" / input_path.stem
             if not output_dir.exists():
                 raise HTTPException(status_code=500, detail="Processing failed - no output directory")
             
-            # List all files in output directory
-            logger.info(f"Job directory: {job_dir}")
-            logger.info(f"Output directory: {output_dir}")
-            all_files = list(output_dir.glob('**/*.mp3'))
-            logger.info(f"All files in output directory: {[f.name for f in all_files]}")
-            
-            # Check for all stem files with more flexible naming
-            input_name = input_path.stem
-            stem_files = {
-                "vocals": next(output_dir.glob(f'**/{input_name}/vocals.mp3'), None),
-                "drums": next(output_dir.glob(f'**/{input_name}/drums.mp3'), None),
-                "bass": next(output_dir.glob(f'**/{input_name}/bass.mp3'), None),
-                "other": next(output_dir.glob(f'**/{input_name}/other.mp3'), None)
-            }
-            
-            # Log what we found
-            for stem_name, stem_path in stem_files.items():
-                logger.info(f"{stem_name} path found: {stem_path}")
-                if not stem_path:
-                    raise HTTPException(
-                        status_code=500, 
-                        detail=f"Processing failed - missing {stem_name} file. Found files: {[f.name for f in all_files]}"
+            # Upload each stem file and get public URLs
+            stem_files = {}
+            for stem_name in ["vocals", "drums", "bass", "other"]:
+                stem_path = output_dir / f"{stem_name}.mp3"
+                if not stem_path.exists():
+                    raise HTTPException(status_code=500, detail=f"Processing failed - missing {stem_name} file")
+                
+                # Upload to Supabase
+                with open(stem_path, "rb") as f:
+                    supabase.storage.from_(self.bucket_name).upload(
+                        f"{job_id}/{stem_name}.mp3",
+                        f.read(),
+                        {"content-type": "audio/mpeg"}
                     )
+                stem_files[stem_name] = get_public_url(self.bucket_name, f"{job_id}/{stem_name}.mp3")
             
-            # Return paths using the actual filenames and relative paths
+            # Store metadata in stem_lookup table
+            supabase.table("stem_lookup").insert({
+                "artist": artist,
+                "track": track,
+                "directory": job_id
+            }).execute()
+            
+            # Clean up local files
+            await self.cleanup_job(job_id)
+            
             return {
                 "job_id": job_id,
                 "status": "completed",
-                "files": {
-                    stem_name: f"/files/{job_id}/mdx_extra/{input_name}/{stem_path.name}"
-                    for stem_name, stem_path in stem_files.items()
-                    if stem_path
-                }
+                "files": stem_files
             }
             
         except Exception as e:
+            logger.error(f"Processing error: {str(e)}")
+            await self.update_progress(job_id, 1.0, "error", str(e))
             raise HTTPException(status_code=500, detail=str(e))
     
     def _validate_audio(self, file_path: Path) -> bool:
@@ -142,16 +143,16 @@ class AudioProcessor:
             max_duration_ms = 15 * 60 * 1000
             
             if duration_ms < min_duration_ms:
-                print(f"File too short: {duration_ms/1000} seconds")
+                logger.warning(f"File too short: {duration_ms/1000} seconds")
                 return False
             if duration_ms > max_duration_ms:
-                print(f"File too long: {duration_ms/1000} seconds")
+                logger.warning(f"File too long: {duration_ms/1000} seconds")
                 return False
             
             return True
             
         except Exception as e:
-            print(f"Audio validation error: {str(e)}")
+            logger.error(f"Audio validation error: {str(e)}")
             return False
     
     async def cleanup_job(self, job_id: str):
@@ -159,10 +160,14 @@ class AudioProcessor:
         if job_dir.exists():
             shutil.rmtree(job_dir)
 
-    async def update_progress(self, job_id: str, progress: float, status: str = "processing"):
-        with open(self.jobs_dir / f"{job_id}.json", 'w') as f:
-            json.dump({
-                "status": status,
-                "progress": progress,
-                "updated_at": datetime.now().isoformat()
-            }, f)
+    async def update_progress(self, job_id: str, progress: float, status: str = "processing", error: str = None):
+        data = {
+            "job_id": job_id,
+            "status": status,
+            "progress": progress,
+            "updated_at": datetime.now().isoformat()
+        }
+        if error:
+            data["error"] = error
+            
+        supabase.table("job_progress").upsert(data).execute()
