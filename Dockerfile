@@ -1,50 +1,52 @@
-FROM --platform=linux/amd64 python:3.9.18-slim as pytorch-base
-
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install PyTorch and Demucs first
-RUN pip install torch==2.1.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cpu
-RUN pip install demucs==4.0.1
-
-# Pre-download Demucs models to avoid hanging during runtime
-RUN python -c "from demucs.pretrained import get_model; get_model('mdx_extra')"
-
-# Final stage
-FROM --platform=linux/amd64 python:3.9.18-slim
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Prevent timezone prompt during build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
+    git \
+    tzdata \
+    wget \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy PyTorch and Demucs from base stage
-COPY --from=pytorch-base /usr/local/lib/python3.9/site-packages/torch /usr/local/lib/python3.9/site-packages/torch
-COPY --from=pytorch-base /usr/local/lib/python3.9/site-packages/torchaudio /usr/local/lib/python3.9/site-packages/torchaudio
-COPY --from=pytorch-base /usr/local/lib/python3.9/site-packages/demucs /usr/local/lib/python3.9/site-packages/demucs
-COPY --from=pytorch-base /root/.cache/torch/hub /root/.cache/torch/hub
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    "numpy<2.0" \
+    fastapi==0.109.2 \
+    uvicorn==0.27.1 \
+    python-multipart==0.0.9 \
+    aiohttp==3.9.3 \
+    aiofiles==23.2.1 \
+    pydantic==2.6.1 \
+    python-dotenv==1.0.1 \
+    pydub==0.25.1 \
+    python-jose==3.3.0 \
+    supabase==2.3.4 \
+    demucs==4.0.1
 
-# Copy and install requirements separately to avoid dependency resolver issues
-COPY requirements.txt requirements-supabase.txt ./
-RUN pip install -r requirements.txt && \
-    pip install -r requirements-supabase.txt
+# Set up directories and environment
+RUN mkdir -p /root/.cache/torch/hub/checkpoints temp temp_uploads
+
+# Copy download script first
+COPY download_model.py .
+
+# Download model with timeout and retries
+RUN timeout 600 python download_model.py || (echo "Model download timed out" && exit 1)
 
 # Copy application code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p temp temp_uploads
-
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
+ENV TORCH_HOME=/root/.cache/torch
 
 # Expose the port
 EXPOSE $PORT

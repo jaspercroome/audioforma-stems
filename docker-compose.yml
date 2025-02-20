@@ -6,6 +6,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      # Mount source code for hot reloading
+      - ./src:/app/src
+      # Mount temp directories to persist between restarts
       - ./temp:/app/temp
       - ./temp_uploads:/app/temp_uploads
     env_file:
@@ -13,6 +16,8 @@ services:
     environment:
       - ENVIRONMENT=local
       - ALLOWED_ORIGINS=http://localhost:5173
+    # Override the CMD to use uvicorn with reload for development
+    command: uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
 volumes:
