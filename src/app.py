@@ -1,7 +1,7 @@
 # src/app.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routes import health, audio
+from .routes import health, audio, stream
 from fastapi.responses import FileResponse
 from pathlib import Path
 import logging
@@ -22,20 +22,25 @@ DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # Optional: Production URL
 ]
 
-# In production, add additional origins from environment variable
+# Origins from ALLOWED_ORIGINS always apply; outside production, any localhost
+# port is allowed too, so local tools (Vite, the orb preview) can connect.
+EXTRA_ORIGINS = [o.strip() for o in os.getenv('ALLOWED_ORIGINS', '').split(',') if o.strip()]
 ALLOWED_ORIGINS: List[str] = (
-    os.getenv('ALLOWED_ORIGINS', '').split(',') 
-    if ENVIRONMENT == 'production' and os.getenv('ALLOWED_ORIGINS') 
-    else DEFAULT_ALLOWED_ORIGINS
+    EXTRA_ORIGINS
+    if ENVIRONMENT == 'production' and EXTRA_ORIGINS
+    else DEFAULT_ALLOWED_ORIGINS + EXTRA_ORIGINS
 )
+LOCAL_ORIGIN_REGEX = None if ENVIRONMENT == 'production' else r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
 
 # CORS middleware for API routes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=LOCAL_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
 )
 
 # Create temp directory
@@ -46,6 +51,7 @@ logger.info(f"Using temp directory: {TEMP_DIR.absolute()}")
 # Include routers
 app.include_router(health.router)
 app.include_router(audio.router, prefix="/api")
+app.include_router(stream.router, prefix="/api")
 
 # File serving route
 @app.get("/files/{path:path}")
@@ -68,7 +74,7 @@ async def serve_file(path: str):
             "Cache-Control": "max-age=604800, no-transform"
         }
     )
-    
+
     logger.info(f"Response headers: {dict(response.headers.items())}")
     return response
 
