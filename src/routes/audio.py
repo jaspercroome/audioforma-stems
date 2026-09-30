@@ -1,9 +1,10 @@
 from fastapi import APIRouter, UploadFile, BackgroundTasks, HTTPException, Form
-from ..processors.audio import AudioProcessor
+from ..processors.audio import AudioProcessor, LOCAL_PROGRESS, stem_files_for
 from ..models.schemas import ProcessingResponse, AudioSeparationRequest
 from ..config.supabase import supabase
+from ..streaming.jobs import new_job_id
 from pathlib import Path
-from datetime import datetime
+import asyncio
 import shutil
 import aiohttp
 import aiofiles
@@ -36,23 +37,23 @@ async def separate_audio(
     artist: str = Form(...),
     track: str = Form(...)
 ):
-    job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+    job_id = new_job_id()
+
     # Save the uploaded file
     temp_dir = Path("temp_uploads")
     temp_dir.mkdir(exist_ok=True)
     temp_file_path = temp_dir / f"{job_id}.mp3"
-    
+
     with temp_file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    
+
     # Initialize job status
     processor = AudioProcessor()
     await processor.update_progress(job_id, 0, "processing")
-    
+
     # Start processing in background
     background_tasks.add_task(process_audio, temp_file_path, job_id, artist, track)
-    
+
     return {"job_id": job_id, "status": "processing"}
 
 @router.post("/audio/separate-from-url", response_model=ProcessingResponse)
@@ -60,46 +61,60 @@ async def separate_audio_from_url(
     request: AudioSeparationRequest,
     background_tasks: BackgroundTasks
 ):
-    job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+    job_id = new_job_id()
+
     # Create temp directory for download
     temp_dir = Path("temp_uploads")
     temp_dir.mkdir(exist_ok=True)
     temp_file_path = temp_dir / f"{job_id}.mp3"
-    
+
     # Download the file
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(request.url) as response:
                 if response.status != 200:
                     raise HTTPException(status_code=400, detail="Could not download file from URL")
-                
+
                 # Save the file
                 async with aiofiles.open(temp_file_path, 'wb') as f:
                     await f.write(await response.read())
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error downloading file: {str(e)}")
-    
+
     # Initialize job status
     processor = AudioProcessor()
     await processor.update_progress(job_id, 0, "processing")
-    
+
     # Start processing in background
     background_tasks.add_task(process_audio, temp_file_path, job_id, request.artist, request.track)
-    
+
     return {"job_id": job_id, "status": "processing"}
 
 @router.get("/audio/status/{job_id}", response_model=ProcessingResponse)
 async def get_status(job_id: str):
-    response = supabase.table("job_progress").select("*").eq("job_id", job_id).execute()
-    
-    if not response.data:
+    if supabase is None:
+        job_status = LOCAL_PROGRESS.get(job_id)
+    else:
+        response = await asyncio.to_thread(
+            lambda: supabase.table("job_progress").select("*").eq("job_id", job_id).execute()
+        )
+        job_status = response.data[0] if response.data else None
+
+    if not job_status:
         raise HTTPException(status_code=404, detail="Job not found")
-        
-    job_status = response.data[0]
+
+    # The job_progress row has no files column; completed stems live at
+    # predictable paths, so derive them rather than returning nothing.
+    files = job_status.get("files")
+    if not files and job_status["status"] == "completed":
+        files = stem_files_for(job_id)
+
     return {
         "job_id": job_status["job_id"],
         "status": job_status["status"],
-        "files": job_status.get("files"),
+        "progress": job_status.get("progress"),
+        "files": files,
         "error": job_status.get("error")
-    } 
+    }

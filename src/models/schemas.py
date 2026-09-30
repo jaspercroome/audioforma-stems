@@ -23,5 +23,6 @@ class StemLookup(BaseModel):
 class ProcessingResponse(BaseModel):
     job_id: str
     status: str
+    progress: Optional[float] = None
     files: Optional[Dict[str, str]] = None
-    error: Optional[str] = None 
+    error: Optional[str] = None

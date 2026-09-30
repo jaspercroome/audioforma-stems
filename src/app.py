@@ -57,11 +57,13 @@ app.include_router(stream.router, prefix="/api")
 @app.get("/files/{path:path}")
 async def serve_file(path: str):
     logger.info(f"Serving file through route: {path}")
-    full_path = os.path.join(TEMP_DIR.absolute(), path)
-    
-    if not os.path.exists(full_path):
+    root = TEMP_DIR.resolve()
+    full_path = (root / path).resolve()
+
+    # Only files inside temp/: a path like ../../etc/passwd must not escape it.
+    if root not in full_path.parents or not full_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-        
+
     response = FileResponse(
         full_path,
         media_type="audio/mpeg",

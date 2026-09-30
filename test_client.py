@@ -4,8 +4,9 @@ import time
 def process_audio(file_path: str):
     # Start the job
     with open(file_path, 'rb') as f:
-        response = requests.post('http://localhost:8000/api/audio/separate', 
-                               files={'file': f})
+        response = requests.post('http://localhost:8000/api/audio/separate',
+                               files={'file': f},
+                               data={'artist': 'unknown', 'track': 'unknown'})
     response_data = response.json()
     if 'job_id' not in response_data:
         print(f"Error: {response_data}")
@@ -21,9 +22,9 @@ def process_audio(file_path: str):
         
         if status['status'] in ['completed', 'error']:
             print(f"\nJob {status['status']}")
-            if 'result' in status:
-                print(f"Output: {status['result']}")
-            elif 'error' in status:
+            if status.get('files'):
+                print(f"Output: {status['files']}")
+            elif status.get('error'):
                 print(f"Error: {status['error']}")
             break
             

@@ -1,10 +1,10 @@
 import requests
 import time
 
-def process_audio_from_url(url: str):
-    # Start the job
-    response = requests.post('http://localhost:8000/api/audio/separate-from-url', 
-                           json={"url": url})
+def process_audio_from_url(url: str, artist: str = "unknown", track: str = "unknown"):
+    # Start the job (artist and track are required by the API)
+    response = requests.post('http://localhost:8000/api/audio/separate-from-url',
+                           json={"url": url, "artist": artist, "track": track})
     response_data = response.json()
     if 'job_id' not in response_data:
         print(f"Error: {response_data}")
@@ -21,8 +21,10 @@ def process_audio_from_url(url: str):
         if status['status'] == 'completed':
             print("\nProcessing completed!")
             print("Files available at:")
-            for stem_name, stem_path in status['files'].items():
-                print(f"{stem_name.title()}: http://localhost:8000{stem_path}")
+            for stem_name, stem_url in (status.get('files') or {}).items():
+                # Supabase URLs are absolute; local ones are paths on this server.
+                full = stem_url if stem_url.startswith("http") else f"http://localhost:8000{stem_url}"
+                print(f"{stem_name.title()}: {full}")
             break
         elif status['status'] == 'error':
             print(f"\nError: {status['error']}")
